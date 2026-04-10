@@ -1,0 +1,5 @@
+streamlit
+pillow
+openpyxl
+python-docx
+pytesseract
