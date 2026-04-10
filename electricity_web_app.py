@@ -214,24 +214,80 @@ with col1:
                 st.error("Failed to save fixed reading.")
     
     st.markdown("##### 📸 Auto-Read (OCR)")
-    uploaded_file = st.file_uploader("Upload or Take a Picture of the Meter", type=['jpg', 'jpeg', 'png'])
-    if uploaded_file is not None:
+    
+    ocr_tab1, ocr_tab2 = st.tabs(["📁 Upload Image", "📷 Live Camera"])
+    
+    image_source = None
+    with ocr_tab1:
+        uploaded_file = st.file_uploader("Upload a Picture of the Meter", type=['jpg', 'jpeg', 'png'], label_visibility="collapsed")
+        if uploaded_file:
+            image_source = uploaded_file
+            
+    with ocr_tab2:
+        camera_file = st.camera_input("Take a Picture directly", label_visibility="collapsed")
+        if camera_file:
+            image_source = camera_file
+
+    if image_source is not None:
         try:
-            img = Image.open(uploaded_file)
-            st.image(img, caption="Meter Preview", width=300)
+            from PIL import ImageOps, ImageEnhance
+            img = Image.open(image_source)
+            width, height = img.size
+            
+            # --- LCD "Laser Focus" Cropping ---
+            # Targeting "slightly above center" as per audio instructions.
+            # Focus on 20% to 50% of the image height.
+            left = width * 0.15
+            top = height * 0.20
+            right = width * 0.85
+            bottom = height * 0.50
+            cropped_img = img.crop((left, top, right, bottom))
+            
+            # --- Preprocessing for OCR ---
+            # 1. Grayscale
+            gray_img = ImageOps.grayscale(cropped_img)
+            # 2. Strong Thresholding for large digital numbers
+            threshold = 125
+            binary_img = gray_img.point(lambda p: 255 if p > threshold else 0)
+            
+            # 3. Enhance Sharpness
+            enhancer = ImageEnhance.Sharpness(binary_img)
+            processed_img = enhancer.enhance(2.0)
+            
+            st.image(img, caption="Original Meter Photo", width=300)
+            st.image(processed_img, caption="Laser Focused LCD Area", width=300)
+            
             if OCR_AVAILABLE:
-                text = pytesseract.image_to_string(img, config=r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789')
+                # PSM 7: Single text line (best for LCD focus)
+                custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789'
+                
+                text = pytesseract.image_to_string(processed_img, config=custom_config)
                 numbers = re.findall(r'\d+', text)
-                if numbers:
-                    largest_num = int(max(numbers, key=len))
-                    st.session_state.ocr_reading = largest_num
-                    st.success(f"✅ OCR Extracted Number: **{largest_num}**")
+                
+                # Falling back to whole image if nothing found in focus area
+                if not numbers:
+                    text_full = pytesseract.image_to_string(gray_img, config=r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789')
+                    numbers = re.findall(r'\d+', text_full)
+
+                # FILTER: Only keep numbers that are 5 or 6 digits long (Ignore small digits)
+                meter_candidates = [n for n in numbers if 5 <= len(n) <= 6]
+                
+                if meter_candidates:
+                    # Pick the reading found
+                    final_num = meter_candidates[0]
+                    st.session_state.ocr_reading = int(final_num)
+                    st.success(f"✅ Large Digits Detected: **{final_num}**")
+                elif numbers:
+                    # Fallback if specific 5-6 digit match not found, take the longest one
+                    largest_num = max(numbers, key=len)
+                    st.session_state.ocr_reading = int(largest_num)
+                    st.warning(f"⚠ Extracted: **{largest_num}** (Identify any extra digits!)")
                 else:
-                    st.warning("⚠ No number detected. Please enter manually.")
+                    st.warning("⚠ LCD digits not found. Please keep the screen centered and close to the camera.")
             else:
-                st.info("Tesseract OCR is not installed/configured. Use manual entry.")
+                st.info("Tesseract OCR is not configured correctly on Windows. Use manual entry.")
         except Exception as e:
-            st.error("Error reading image.")
+            st.error(f"Error during LCD processing: {e}")
             
     c_curr_col, c_mon_col = st.columns(2)
     with c_curr_col:
